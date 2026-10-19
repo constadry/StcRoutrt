@@ -1,7 +1,5 @@
 ﻿using StcRoutrt;
 
-Console.WriteLine("Hello, World!");
-
 var r = new Router();
 
 r.RegisterRoute<int>("/foo/bar/{p:int}/", p => Console.WriteLine(p));

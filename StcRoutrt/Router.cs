@@ -1,62 +1,109 @@
-﻿using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Globalization;
-using System.Text;
+﻿using System.Globalization;
 
 namespace StcRoutrt
 {
-    internal class Router
+
+    internal class Router : IRouter
     {
-        private readonly ConcurrentDictionary<string, Action<string>> _routesOneArg = new();
-        private readonly ConcurrentDictionary<string, Action<string, string>> _routesTwoArg = new();
+        private readonly Node _tree = new();
+        private readonly object _registerLock = new();
 
-        internal void RegisterRoute<T1>(string route, Action<T1> action) where T1 : IParsable<T1>
-        {
-            var parametr1 = route.Split('/').Where(x => x.Contains(':')).FirstOrDefault();
-            var routeWithoutOneParameter = route.Remove(route.Length - 1).Replace($"/{parametr1}", "");
-
-            if (!_routesOneArg.TryAdd(routeWithoutOneParameter, (obj) => action(Parse<T1>(obj))))
+        public void RegisterRoute<T1>(string route, Action<T1> action)
+            where T1 : IParsable<T1>
+            => RegisterRoute(route, args =>
             {
-                throw new InvalidOperationException("Маршрут уже зарегистрирован");
-            }
-        }
+                if (!T1.TryParse(args[0], CultureInfo.InvariantCulture, out var a)) return false;
+                action(a);
+                return true;
+            });
 
-        internal void RegisterRoute<T1, T2>(string route, Action<T1, T2> action) where T1 : IParsable<T1> where T2 : IParsable<T2>
-        {
-            var parametr1 = route.Remove(route.Length - 1).Split('/').ToList().LastOrDefault();
-            var parametr2 = route.Remove(route.Length - 1).Split('/').ToList().TakeLast(2).FirstOrDefault();
-
-            var routeWithoutOneParameter = route.Remove(route.Length - 1).Replace($"/{parametr1}", "");
-            var routeWithoutTwoParameters = routeWithoutOneParameter.Replace($"/{parametr2}", "");
-            if (!_routesTwoArg.TryAdd(routeWithoutTwoParameters, (obj1, obj2) => action(Parse<T1>(obj1), Parse<T2>(obj2))))
+        public void RegisterRoute<T1, T2>(string route, Action<T1, T2> action) 
+            where T1 : IParsable<T1> where T2 : IParsable<T2>
+            => RegisterRoute(route, args =>
             {
-                throw new InvalidOperationException("Маршрут уже зарегистрирован");
-            }
-        }
+                if (!T1.TryParse(args[0], CultureInfo.InvariantCulture, out var a)) return false;
+                if (!T2.TryParse(args[1], CultureInfo.InvariantCulture, out var b)) return false;
+                action(a, b);
+                return true;
+            });
 
-        internal void Route(string route)
+        internal void RegisterRoute(string route, Func<string[], bool> handler)
         {
-            var parametr1 = route.Split('/').ToList().TakeLast(2).FirstOrDefault();
-            var parametr2 = route.Split('/').ToList().TakeLast(2).LastOrDefault();
-
-            var routeWithoutOneParameter = route.Replace($"/{parametr2}", "");
-            var routeWithoutTwoParameters = routeWithoutOneParameter.Replace($"/{parametr1}", "");
-            if (_routesOneArg.TryGetValue(routeWithoutOneParameter, out var action) && action != null) 
+            lock (_registerLock)
             {
-                if (parametr2 != null) 
+                var elements = route.Split('/', StringSplitOptions.RemoveEmptyEntries);
+                var current = _tree;
+
+                foreach (var element in elements)
                 {
-                    action(parametr2);
+                    if (element.StartsWith('{') && element.EndsWith('}'))
+                    {
+                        current.Param ??= new Node();
+                        current = current.Param;
+                    }
+                    else
+                    {
+                        if (!current.Static.TryGetValue(element, out var childNode))
+                        {
+                            childNode = new Node();
+                            current.Static[element] = childNode;
+                        }
+                        current = childNode;
+                    }
                 }
-            } else if (_routesTwoArg.TryGetValue(routeWithoutTwoParameters, out var actionTwo) && actionTwo != null)
-            {
-                if (parametr1 != null && parametr2 != null)
-                {
-                    actionTwo(parametr1, parametr2);
-                }
+
+                if (current.Handler is not null)
+                    throw new ArgumentException($"Маршрут '{route}' уже зарегестрирован!");
+                current.Handler = handler;
             }
         }
 
-        static T Parse<T>(string s) where T : IParsable<T> => T.Parse(s, CultureInfo.InvariantCulture);
+        public void Route(string route)
+        {
+            var elements = route.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var current = _tree;
+
+            string? par1 = null;
+            string? par2 = null;
+
+            foreach (var element in elements)
+            {
+                if (!current.Static.TryGetValue(element, out var childNode))
+                {
+                    var paramNode = current.Param;
+                    if (paramNode is null)
+                    {
+                        Console.WriteLine($"Маршрут '{route}' не найден!");
+                        return;
+                    } else
+                    {
+                        if (par1 is null)
+                            par1 = element;
+                        else if (par2 is null)
+                            par2 = element;
+                        else
+                        {
+                            Console.WriteLine($"Маршрут '{route}' не найден!");
+                            return;
+                        }
+                        current = paramNode;
+                    }
+                } else
+                {
+                    current = childNode;
+                }
+            }
+
+            if (current.Handler is null)
+            {
+                Console.WriteLine($"Маршрут '{route}' не найден!");
+                return;
+            }
+            else
+            {
+                if (!current.Handler([par1!, par2!]))
+                    Console.WriteLine($"Маршрут '{route}' найден, но параметры не прошли проверку!");
+            }
+        }
     }
 }
